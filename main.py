@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import logging
@@ -8,13 +9,13 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 
-# --- ⚙️ CONFIGURATION ---
-# Remplace par ton Token Telegram (celui de BotFather)
-TELEGRAM_TOKEN = "7948324469:AAFzydmSMfMy3_Y6C71apcsGZHFzX_FLMmo"
+# --- ⚙️ CONFIGURATION PRO ---
+# Mets ton vrai token Telegram ici
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7948324469:AAFzydmSMfMy3_Y6C71apcsGZHFzX_FLMmo")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "e03f5eb6-c27f-42fe-94e8-d08dbe5a0694")
 
-# Noeuds Solana (Utilise Helius ou Quicknode en prod pour ne pas être bloqué)
-SOLANA_WSS = "wss://api.mainnet-beta.solana.com"
-SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+SOLANA_WSS = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+SOLANA_RPC = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 RAYDIUM_LP_V4 = "675k1q2AYp7saSygv22Ebxnux1qMxt2Uum9NiUJp3nAY"
 
 # --- 🗄️ VARIABLES D'ÉTAT ---
@@ -25,7 +26,7 @@ bot_state = {
     "scanner_task": None
 }
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
@@ -34,27 +35,27 @@ dp = Dispatcher()
 # ==========================================
 
 def get_main_menu():
-    status = "🟢 ACTIF" if bot_state["is_scanning"] else "🔴 INACTIF"
+    status = "🟢 EN LIGNE (Helius WSS)" if bot_state["is_scanning"] else "🔴 EN PAUSE"
     rug = "✅ ON" if bot_state["anti_rug"] else "❌ OFF (Degen)"
     
     builder = InlineKeyboardBuilder()
     if not bot_state["is_scanning"]:
-        builder.row(types.InlineKeyboardButton(text="🚀 Lancer le Scan", callback_data="start_scan"))
+        builder.row(types.InlineKeyboardButton(text="🚀 Démarrer le Scanner", callback_data="start_scan"))
     else:
-        builder.row(types.InlineKeyboardButton(text="🛑 Stopper le Scan", callback_data="stop_scan"))
+        builder.row(types.InlineKeyboardButton(text="🛑 Stopper le Scanner", callback_data="stop_scan"))
         
-    builder.row(types.InlineKeyboardButton(text=f"🛡️ Anti-Rug : {rug}", callback_data="toggle_rug"))
-    builder.row(types.InlineKeyboardButton(text="📈 Stats & Portefeuille", callback_data="show_stats"))
+    builder.row(types.InlineKeyboardButton(text=f"🛡️ Filtre Anti-Rug : {rug}", callback_data="toggle_rug"))
     return builder.as_markup(), status
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    bot_state["chat_id"] = message.chat.id # Enregistre l'utilisateur
+    bot_state["chat_id"] = message.chat.id
     markup, status = get_main_menu()
     await message.answer(
-        "🤖 **RAYDIUM SNIPER BOT - V1.0**\n\n"
-        f"**Statut du Scanner :** {status}\n\n"
-        "Que veux-tu faire ?",
+        "⚡ **RAYDIUM SNIPER PRO** ⚡\n\n"
+        f"**Statut :** {status}\n"
+        "**Nœud RPC :** Helius Premium\n\n"
+        "Prêt à intercepter les pools !",
         reply_markup=markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -64,9 +65,7 @@ async def toggle_rug(callback: types.CallbackQuery):
     bot_state["anti_rug"] = not bot_state["anti_rug"]
     markup, status = get_main_menu()
     await callback.message.edit_text(
-        "🤖 **RAYDIUM SNIPER BOT - V1.0**\n\n"
-        f"**Statut du Scanner :** {status}\n"
-        "*(Paramètres mis à jour !)*",
+        f"⚡ **RAYDIUM SNIPER PRO** ⚡\n\n**Statut :** {status}\n*(Paramètres mis à jour)*",
         reply_markup=markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -81,7 +80,7 @@ async def start_scan(callback: types.CallbackQuery):
     
     markup, status = get_main_menu()
     await callback.message.edit_text(
-        "⚡ **SCAN DÉMARRÉ !**\n\nJe surveille la blockchain en temps réel...",
+        "🟢 **SCANNER ACTIVÉ !**\n\nConnexion au nœud Helius en cours...",
         reply_markup=markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -94,14 +93,114 @@ async def stop_scan(callback: types.CallbackQuery):
         
     markup, status = get_main_menu()
     await callback.message.edit_text(
-        "🛑 **SCAN ARRÊTÉ.**\n\nÀ bientôt pour chasser de nouveaux memecoins.",
+        "🔴 **SCANNER ARRÊTÉ.**",
         reply_markup=markup,
         parse_mode=ParseMode.MARKDOWN
     )
 
-@dp.callback_query(F.data == "show_stats")
-async def show_stats(callback: types.CallbackQuery):
-    await callback.answer("Fonctionnalité en cours de développement 🚧", show_alert=True)
+# ==========================================
+# 🔍 MOTEUR WEB3 (HELIUS SCANNER)
+# ==========================================
+
+async def fetch_transaction_details(signature):
+    """Interroge Helius pour trouver l'adresse (Mint) du nouveau token."""
+    payload = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "getTransaction",
+        "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(SOLANA_RPC, json=payload) as response:
+                result = await response.json()
+                if "result" in result and result["result"]:
+                    meta = result["result"].get("meta", {})
+                    balances = meta.get("postTokenBalances", [])
+                    for balance in balances:
+                        mint = balance.get("mint")
+                        if mint and mint != "So11111111111111111111111111111111111111112":
+                            return mint
+        except Exception as e:
+            logging.error(f"Erreur extraction RPC Helius : {e}")
+    return None
+
+async def solana_scanner_loop():
+    """Moteur ultra-rapide connecté via WebSocket à Helius."""
+    while bot_state["is_scanning"]:
+        try:
+            async with websockets.connect(SOLANA_WSS, ping_interval=20, ping_timeout=20) as websocket:
+                subscribe_msg = {
+                    "jsonrpc": "2.0", "id": 1, "method": "logsSubscribe",
+                    "params": [{"mentions": [RAYDIUM_LP_V4]}, {"commitment": "processed"}]
+                }
+                await websocket.send(json.dumps(subscribe_msg))
+                logging.info("🔌 CONNECTÉ À HELIUS WSS AVEC SUCCÈS.")
+                
+                if bot_state["chat_id"]:
+                    await bot.send_message(bot_state["chat_id"], "✅ **Connecté à Helius.** En attente de pools...")
+
+                while bot_state["is_scanning"]:
+                    response = await websocket.recv()
+                    data = json.loads(response)
+                    
+                    if "method" in data and data["method"] == "logsNotification":
+                        logs = data["params"]["result"]["value"]["logs"]
+                        
+                        # Recherche plus large de l'instruction d'initialisation Raydium
+                        log_str = str(logs).lower()
+                        if "initialize2" in log_str or "initializeinstruction2" in log_str:
+                            signature = data["params"]["result"]["value"]["signature"]
+                            logging.info(f"✨ POOL DÉTECTÉE ! Signature: {signature}")
+                            
+                            await asyncio.sleep(1.5) # Léger délai pour que l'indexeur RPC soit à jour
+                            mint_address = await fetch_transaction_details(signature)
+                            
+                            if mint_address and bot_state["chat_id"]:
+                                await send_alert(mint_address, signature)
+
+        except websockets.exceptions.ConnectionClosed:
+            logging.warning("⚠️ Déconnecté de Helius. Reconnexion automatique dans 3s...")
+            await asyncio.sleep(3)
+        except Exception as e:
+            logging.error(f"❌ Erreur WSS inattendue : {e}")
+            await asyncio.sleep(5)
+
+async def send_alert(mint_address, signature):
+    """Génère l'alerte Telegram avec les liens pros."""
+    dex_link = f"https://dexscreener.com/solana/{mint_address}"
+    axiom_link = f"https://axiom.xyz/token/{mint_address}"
+    rugcheck_link = f"https://rugcheck.xyz/tokens/{mint_address}"
+    solscan_link = f"https://solscan.io/tx/{signature}"
+    
+    msg = (
+        "🚨 **NOUVELLE POOL RAYDIUM** 🚨\n\n"
+        f"📝 **Token Mint:** `{mint_address}`\n"
+        f"🛡️ **Mode Sécurité:** {'✅ Anti-Rug' if bot_state['anti_rug'] else '❌ Degen'}\n\n"
+        "⚡ *Outils d'analyse :*"
+    )
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="📈 Dexscreener", url=dex_link), types.InlineKeyboardButton(text="🔬 Axiom", url=axiom_link))
+    builder.row(types.InlineKeyboardButton(text="🛡️ RugCheck", url=rugcheck_link), types.InlineKeyboardButton(text="🔍 Tx Solscan", url=solscan_link))
+    
+    try:
+        await bot.send_message(bot_state["chat_id"], msg, reply_markup=builder.as_markup(), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logging.error(f"Erreur envoi Telegram: {e}")
+
+# ==========================================
+# 🚀 DÉMARRAGE
+# ==========================================
+async def main():
+    logging.info("Démarrage du bot Telegram...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot arrêté manuellement.")
 
 # ==========================================
 # 🔍 MOTEUR WEB3 (SCANNER SOLANA)
